@@ -4910,7 +4910,86 @@ for i in range(n_mhe-1): # 27 was fine, range(11) range(n_mhe): 26,35,36,37,38,3
                            (P - mtimes(mtimes(mtimes(P,my_c.T),
                                               solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
                            a_c2d.T) 
-            S = linalg.inv(P)                                               
+            S = linalg.inv(P)
+
+    else:
+        # We are doing smoothing update thats why initial covariance will be
+        # update :)
+        # linearize around initial state values
+        #f_c = dae.create('f_c', ['x','z','u','p'], ['jac_ddef_x','jac_ddef_z',
+        #         'jac_alg_x','jac_alg_z','jac_ode_x','jac_ode_z'])
+                        
+        ## Linearization calculations
+        # d = Ex + Fz
+        # 0 = Gx + Hz
+        # x_dot = Ix + Jz
+        # z = -inv(H)*G*x
+        # xdot = (I - J*inv(H)*G)x
+        # d = (E - F*inv(H)*G)x
+
+        # E,F,G,H,I,J
+        f_c = dae.create('f_c', ['x','z','u','p'], ['jac_ddef_x','jac_ddef_z',
+                 'jac_alg_x','jac_alg_z','jac_ode_x','jac_ode_z'])
+
+        for i_t in range(i+1):                        
+            my_e, my_f, my_g, my_h, my_i, my_j = f_c(w_opt[0:Nstates], 
+                                               w_opt[Nstates:Nstates + Nalgvars],
+                                               w_opt[Nstates + Nalgvars:Nstates + Nalgvars + Nstates + Ninputs],
+                                               #U_dm2[i] + U_dm1[i] + w_dm[i],
+                                               par_val_mismatch)
+            # """                                   
+            # Forward Euler Discretization method
+            my_i = my_i + eye(Nstates)
+            my_k = solve(my_h,my_g)
+            my_a = my_i - mtimes(my_j,my_k)        
+    
+            # No need for exponentials
+            a_c2d = my_a
+            
+            # get the full C matrix
+            my_c1 = my_e - mtimes(my_f,my_k) 
+    
+            # Get the no of measurements at that time instant
+            Nmeas = meas_struct[i - mhe_horizon + 1]
+            
+            # Build appropriate C matrix
+            if Nmeas == 13:                   
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:],
+                               my_c1[196,:], my_c1[201,:], my_c1[203,:], my_c1[205,:],
+                               my_c1[206,:])
+                
+                # Apply EKF update formula (no inverse!)
+                P = Q1 + mtimes(mtimes(a_c2d,
+                               (P - mtimes(mtimes(mtimes(P,my_c.T),
+                                                  solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
+                               a_c2d.T)
+                S = linalg.inv(P)                
+                               
+            if Nmeas == 8:
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:])
+                               
+                # Apply EKF update formula (no inverse!)
+                P = Q1 + mtimes(mtimes(a_c2d,
+                               (P - mtimes(mtimes(mtimes(P,my_c.T),
+                                                  solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
+                               a_c2d.T)
+                S = linalg.inv(P)               
+                               
+            if Nmeas == 6:
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall)
+                               
+                # Apply EKF update formula (no inverse!)
+                # Propagate the covariance matrix forward
+                P = Q1 + mtimes(mtimes(a_c2d,
+                               (P - mtimes(mtimes(mtimes(P,my_c.T),
+                                                  solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
+                               a_c2d.T) 
+        S = linalg.inv(P)                                               
     
     #%%# Extraction process from results
     # First get the estimates 
