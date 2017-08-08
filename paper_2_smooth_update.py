@@ -4858,8 +4858,7 @@ for i in range(n_mhe-1): # 27 was fine, range(11) range(n_mhe): 26,35,36,37,38,3
                                            w_opt[Nstates:Nstates + Nalgvars],
                                            w_opt[Nstates + Nalgvars:Nstates + Nalgvars + Nstates + Ninputs],
                                            #U_dm2[i] + U_dm1[i] + w_dm[i],
-                                           par_val_mismatch)
-        # """                                   
+                                           par_val_mismatch)                                  
         # Forward Euler Discretization method
         my_i = my_i + eye(Nstates)
         my_k = solve(my_h,my_g)
@@ -4911,47 +4910,56 @@ for i in range(n_mhe-1): # 27 was fine, range(11) range(n_mhe): 26,35,36,37,38,3
                                               solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
                            a_c2d.T) 
             S = linalg.inv(P)
+  
+    #%%# Extraction process from results
+    # While extracting do the smoothing EKF update as well
+    # First get the estimates 
+    x_mat_est = horzcat(x_mat_est, w_opt[-(Nstates+Nalgvars):-(Nalgvars)])
 
-    else:
-        # We are doing smoothing update thats why initial covariance will be
-        # update :)
-        # linearize around initial state values
-        #f_c = dae.create('f_c', ['x','z','u','p'], ['jac_ddef_x','jac_ddef_z',
-        #         'jac_alg_x','jac_alg_z','jac_ode_x','jac_ode_z'])
-                        
-        ## Linearization calculations
-        # d = Ex + Fz
-        # 0 = Gx + Hz
-        # x_dot = Ix + Jz
-        # z = -inv(H)*G*x
-        # xdot = (I - J*inv(H)*G)x
-        # d = (E - F*inv(H)*G)x
+    # Now loop over the finite elements
+    if i >= mhe_horizon-1:# non-batch mode
+    
+        # Define storage matrices
+        a_c2d = []
+        p_store = []
+        c_store = []
+        p_store.append(P)
 
-        # E,F,G,H,I,J
-        f_c = dae.create('f_c', ['x','z','u','p'], ['jac_ddef_x','jac_ddef_z',
-                 'jac_alg_x','jac_alg_z','jac_ode_x','jac_ode_z'])
-
-        for i_t in range(i+1):                        
-            my_e, my_f, my_g, my_h, my_i, my_j = f_c(w_opt[0:Nstates], 
+        # First 2 set of values :(        
+        for i_in in range(2):
+        
+            # Very first linearization starts now
+            if i_in < 1:
+                my_e, my_f, my_g, my_h, my_i, my_j = f_c(w_opt[0:Nstates], 
                                                w_opt[Nstates:Nstates + Nalgvars],
                                                w_opt[Nstates + Nalgvars:Nstates + Nalgvars + Nstates + Ninputs],
-                                               #U_dm2[i] + U_dm1[i] + w_dm[i],
                                                par_val_mismatch)
-            # """                                   
+            else:
+                # Drop the first element values
+                w_opt = w_opt[(Nstates)*(steps+1)+(Nalgvars)*steps+Ninputs:]
+        
+                # Extract the initial state values
+                X_ini = DM(w_opt[0:Nstates])
+        
+                # Extract the initial algebraic variable values
+                Z_ini = DM(w_opt[Nstates:Nstates + Nalgvars])                
+                my_e, my_f, my_g, my_h, my_i, my_j = f_c(X_ini,Z_ini,
+                                               w_opt[Nstates + Nalgvars:Nstates + Nalgvars + Nstates + Ninputs],
+                                               par_val_mismatch)                
+                                 
             # Forward Euler Discretization method
             my_i = my_i + eye(Nstates)
             my_k = solve(my_h,my_g)
             my_a = my_i - mtimes(my_j,my_k)        
-    
-            # No need for exponentials
-            a_c2d = my_a
+                
+            a_c2d.append(my_a)
             
             # get the full C matrix
             my_c1 = my_e - mtimes(my_f,my_k) 
     
-            # Get the no of measurements at that time instant
-            Nmeas = meas_struct[i - mhe_horizon + 1]
-            
+            # Get the no of measurements at initial time instant
+            Nmeas = meas_struct[i-mhe_horizon+1+i_in]
+
             # Build appropriate C matrix
             if Nmeas == 13:                   
                 my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
@@ -4959,53 +4967,39 @@ for i in range(n_mhe-1): # 27 was fine, range(11) range(n_mhe): 26,35,36,37,38,3
                                my_c_mm_t, my_c1[396,:],
                                my_c1[196,:], my_c1[201,:], my_c1[203,:], my_c1[205,:],
                                my_c1[206,:])
+                c_store.append(my_c)
                 
-                # Apply EKF update formula (no inverse!)
-                P = Q1 + mtimes(mtimes(a_c2d,
-                               (P - mtimes(mtimes(mtimes(P,my_c.T),
-                                                  solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
-                               a_c2d.T)
-                S = linalg.inv(P)                
+                # Apply EKF update formula (no inverse!) (correction + prediction)
+                Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                p_store.append(Pi)
+                P = Q1 + mtimes(mtimes(a_c2d[i_in],Pi),a_c2d[i_in].T)
+                p_store.append(P)               
                                
             if Nmeas == 8:
                 my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
-                               my_c_t_roof, my_c_t_wall,
-                               my_c_mm_t, my_c1[396,:])
-                               
+                                   my_c_t_roof, my_c_t_wall,
+                                   my_c_mm_t, my_c1[396,:])
+                c_store.append(my_c)
+                       
                 # Apply EKF update formula (no inverse!)
-                P = Q1 + mtimes(mtimes(a_c2d,
-                               (P - mtimes(mtimes(mtimes(P,my_c.T),
-                                                  solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
-                               a_c2d.T)
-                S = linalg.inv(P)               
-                               
+                Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                                solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                p_store.append(Pi)
+                P = Q1 + mtimes(mtimes(a_c2d[i_in],Pi),a_c2d[i_in].T)
+                p_store.append(P)              
+                                   
             if Nmeas == 6:
                 my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
-                               my_c_t_roof, my_c_t_wall)
-                               
+                                   my_c_t_roof, my_c_t_wall)
+                c_store.append(my_c)
+                       
                 # Apply EKF update formula (no inverse!)
-                # Propagate the covariance matrix forward
-                P = Q1 + mtimes(mtimes(a_c2d,
-                               (P - mtimes(mtimes(mtimes(P,my_c.T),
-                                                  solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))),
-                               a_c2d.T) 
-        S = linalg.inv(P)                                               
-    
-    #%%# Extraction process from results
-    # First get the estimates 
-    x_mat_est = horzcat(x_mat_est, w_opt[-(Nstates+Nalgvars):-(Nalgvars)])
-
-    # Now loop over the finite elements
-    if i >= mhe_horizon-1:# non-batch mode
-    
-        # Drop the first element values
-        w_opt = w_opt[(Nstates)*(steps+1)+(Nalgvars)*steps+Ninputs:]
-        
-        # Extract the initial state values
-        X_ini = DM(w_opt[0:Nstates])
-        
-        # Extract the initial algebraic variable values
-        Z_ini = DM(w_opt[Nstates:Nstates + Nalgvars])
+                Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                                solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                p_store.append(Pi)
+                P = Q1 + mtimes(mtimes(a_c2d[i_in],Pi),a_c2d[i_in].T)
+                p_store.append(P)
         
         # Repeating part
         w_opt1 = w_opt[Nstates + Nalgvars:]
@@ -5029,12 +5023,248 @@ for i in range(n_mhe-1): # 27 was fine, range(11) range(n_mhe): 26,35,36,37,38,3
                 x_guess = horzcat(x_guess,xz_hold[0:Nstates])
                 z_guess = horzcat(z_guess,xz_hold[Nstates:Nstates+Nalgvars])
                 
+            my_e, my_f, my_g, my_h, my_i, my_j = f_c(x_guess[:,-1], 
+                                                     z_guess[:,-1], u_opt[:,-1],
+                                                     par_val_mismatch)                                  
+            # Forward Euler Discretization method (No need for exponentials)
+            my_i = my_i + eye(Nstates)
+            my_k = solve(my_h,my_g)
+            my_a = my_i - mtimes(my_j,my_k)        
+            
+            a_c2d.append(my_a)
+            
+            # get the full C matrix
+            my_c1 = my_e - mtimes(my_f,my_k) 
+    
+            # Get the no of measurements at that time instant
+            Nmeas = meas_struct[i-mhe_horizon+1+iw+2]
+            
+            # Build appropriate C matrix
+            if Nmeas == 13:                   
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:],
+                               my_c1[196,:], my_c1[201,:], my_c1[203,:], my_c1[205,:],
+                               my_c1[206,:])
+                c_store.append(my_c)
+                
+                # Apply EKF update formula (no inverse!)
+                if iw == mhe_horizon-2: # If last then only filtering (no prediction)
+                    P = P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P)
+                    p_store.append(P)
+                else: # Else filtering + prediction
+                    Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                    p_store.append(Pi)
+                    P = Q1 + mtimes(mtimes(a_c2d[iw+2],Pi),a_c2d[iw+2].T)
+                    p_store.append(P)              
+                               
+            if Nmeas == 8:
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:])
+                c_store.append(my_c)
+                
+                # Apply EKF update formula (no inverse!)
+                if iw == mhe_horizon-2: # If last then only filtering (no prediction)
+                    P = P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P)
+                    p_store.append(P)
+                else: # Else filtering + prediction
+                    Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                    p_store.append(Pi)
+                    P = Q1 + mtimes(mtimes(a_c2d[iw+2],Pi),a_c2d[iw+2].T)
+                    p_store.append(P)              
+                               
+            if Nmeas == 6:
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall)
+                c_store.append(my_c)
+                
+                # Apply EKF update formula (no inverse!)
+                if iw == mhe_horizon-2: # If last then only filtering (no prediction)
+                    P = P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P)
+                    p_store.append(P)
+                else: # Else filtering + prediction
+                    Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                    p_store.append(Pi)
+                    P = Q1 + mtimes(mtimes(a_c2d[iw+2],Pi),a_c2d[iw+2].T)
+                    p_store.append(P)
+                
+        # Smoothing the matrix back N-1 times
+        Ps = p_store[-1]
+        for i_s in range(mhe_horizon-1):
+            # first two Ax = B solves
+            # We are following biegler formula with -ve sign
+            p_hold = solve(p_store[-1*(2*(i_s+1))],a_c2d[-1*(i_s+2)])
+            p_hold1 = solve(p_store[-1*(2*(i_s+1))],
+                          p_store[-1*(2*(i_s+1))]-Ps)
+            Ps = p_store[-1*(2*i_s+1+1)] - mtimes(mtimes(mtimes(mtimes(p_store[-1*(2*i_s+1+1)],a_c2d[-1*(i_s+2)]),
+                        p_hold1),p_hold),p_store[-1*(2*i_s+1+1)])
+            
+        S = linalg.inv(Ps)
+        
+        ## Extra terms for smoothing MHE objective function
+        # 1. O matrix
+        Oz = []
+        Oz = horzcat(Oz,c_store[1])
+        a_mult = a_c2d[1]
+        for i_p in range(mhe_horizon-1): 
+            if i_p > 0:
+                a_mult = mtimes(a_c2d[i_p+1],a_mult)                
+            Oz = horzcat(Oz,mtimes(c_store[i_p+2],a_mult))
+            
+        # 2. M
+        M_main = []
+        # No. of rows: mhe_horizon, No. of columns: mhe_horizon-1
+        # Build the columns
+        mc = np.zeros(c_store[2].shape)
+                
+        for i_mc in range(mhe_horizon-1):
+            ac2d_mult = a_c2d[i_mc+2]
+            # Build it row by row
+            # Add appropriate no of zero matrices to column first
+            mc = []            
+            for i_mr1 in range(i_mc+1):
+                mc1 = np.zeros(c_store[i_mr1+2].shape)
+                mc = vertcat(mc, mc1)
+            # Now add the other rwo contents   
+            for i_mr in range(mhe_horizon-1-i_mc):
+                al_mult = c_store[i_mr+2+i_mc]
+                if i_mr > 0:                                        
+                    al_mult = mtimes(al_mult,ac2d_mult)
+                    ac2d_mult = mtimes(a_c2d[i_mr+2+i_mc],ac2d_mult)                    
+                mc = vertcat(mc, al_mult)
+            # Build the M matrix by adding the full column    
+            M_main = horzcat(M_main, mc)    
+
+        # 3. Q: diag(Q_{k-N},...,Q_{k-1})  
+        Q_0 = np.zeros((Nstates, Nstates))
+        Q_s = []
+        for i_q in range(mhe_horizon):
+            Q_s1 = []
+            for i_qj in range(mhe_horizon):
+                if i_q == i_qj:
+                    Q_s1 = horzcat(Q_s1, Q1)
+                else:
+                    Q_s1 = horzcat(Q_s1, Q_0)
+            Q_s = vertcat(Q_s,Q_s1)
+                
+        # 4. R: Based on Nmeas fit the matrices in diagonal
+        R_s = []
+        for i_q in range(mhe_horizon):
+            R_s1 = []
+            for i_qj in range(mhe_horizon):
+                # Build the Matrix row                
+                if i_q == i_qj:
+                    if meas_struct[i-mhe_horizon+1+i_q] == 13:
+                        R_s1 = horzcat(R_s1, R1_full)
+                    if meas_struct[i-mhe_horizon+1+i_q] == 8:
+                        R_s1 = horzcat(R_s1, R1_half)
+                    if meas_struct[i-mhe_horizon+1+i_q] == 6:
+                        R_s1 = horzcat(R_s1, R1)                        
+                else:
+                    R_0 = np.zeros((meas_struct[i-mhe_horizon+1+i_q], meas_struct[i-mhe_horizon+1+i_q]))
+                    R_s1 = horzcat(R_s1, R_0)
+            R_s = vertcat(R_s,R_s1) 
+                    
+        # 5. W
+        W1 = mtimes(mtimes(Oz,Ps), Oz.T) + mtimes(mtimes(M_main,Q_s), M_main.T)+ R_s
+        W = linalg.inv(W1) 
+               
     else: # batch model 
+        # We are doing smoothing update thats why initial covariance will be
+        # updated :)
+        # linearize around initial state values
+                        
+        ## Linearization calculations
+        # d = Ex + Fz
+        # 0 = Gx + Hz
+        # x_dot = Ix + Jz
+        # z = -inv(H)*G*x
+        # xdot = (I - J*inv(H)*G)x
+        # d = (E - F*inv(H)*G)x
+
+        # E,F,G,H,I,J
+        # f_c = dae.create('f_c', ['x','z','u','p'], ['jac_ddef_x','jac_ddef_z',
+        #         'jac_alg_x','jac_alg_z','jac_ode_x','jac_ode_z'])
+                        
         X_ini = DM(w_opt[0:Nstates])
         
         # Extract the initial algebraic variable values
         Z_ini = DM(w_opt[Nstates:Nstates + Nalgvars])
         
+        
+        # Very first linearization starts now
+        my_e, my_f, my_g, my_h, my_i, my_j = f_c(w_opt[0:Nstates], 
+                                               w_opt[Nstates:Nstates + Nalgvars],
+                                               w_opt[Nstates + Nalgvars:Nstates + Nalgvars + Nstates + Ninputs],
+                                               #U_dm2[i] + U_dm1[i] + w_dm[i],
+                                               par_val_mismatch)        
+                                   
+        # Forward Euler Discretization method (No need for exponentials)
+        my_i = my_i + eye(Nstates)
+        my_k = solve(my_h,my_g)
+        my_a = my_i - mtimes(my_j,my_k)        
+    
+        # Define storage matrices
+        a_c2d = []
+        p_store = []
+        c_store = []
+        p_store.append(P)
+        a_c2d.append(my_a)
+            
+        # get the full C matrix
+        my_c1 = my_e - mtimes(my_f,my_k) 
+    
+        # Get the no of measurements at initial time instant
+        Nmeas = meas_struct[0]
+
+        # Build appropriate C matrix
+        if Nmeas == 13:                   
+            my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:],
+                               my_c1[196,:], my_c1[201,:], my_c1[203,:], my_c1[205,:],
+                               my_c1[206,:])
+            c_store.append(my_c)
+                
+            # Apply EKF update formula (no inverse!) (correction + prediction)
+            Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+            p_store.append(Pi)
+            P = Q1 + mtimes(mtimes(a_c2d[0],Pi),a_c2d[0].T)
+            p_store.append(P)               
+                               
+        if Nmeas == 8:
+            my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:])
+            c_store.append(my_c)
+                   
+            # Apply EKF update formula (no inverse!)
+            Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+            p_store.append(Pi)
+            P = Q1 + mtimes(mtimes(a_c2d[0],Pi),a_c2d[0].T)
+            p_store.append(P)              
+                               
+        if Nmeas == 6:
+            my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall)
+            c_store.append(my_c)
+                   
+            # Apply EKF update formula (no inverse!)
+            Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+            p_store.append(Pi)
+            P = Q1 + mtimes(mtimes(a_c2d[0],Pi),a_c2d[0].T)
+            p_store.append(P)
+ 
         # Repeating part
         w_opt1 = w_opt[Nstates + Nalgvars:]
         x_guess = []
@@ -5044,7 +5274,7 @@ for i in range(n_mhe-1): # 27 was fine, range(11) range(n_mhe): 26,35,36,37,38,3
         for iw in range(i+1):
             # Select the first set of values for a finite element
             w_opt2 = DM(w_opt1[(Ninputs+(Nstates)*(steps+1)+(Nalgvars)*steps)*iw:\
-                            (Ninputs+(Nstates)*(steps+1)+(Nalgvars)*steps)*(iw+1)])
+                            (Ninputs+(Nstates)*(steps+1)+(Nalgvars)*steps)*(iw+1)])                                                
             
             # Now extract the input values (model noise included :| )               
             u_opt = horzcat(u_opt,w_opt2[0:Ninputs+Nstates])
@@ -5056,7 +5286,160 @@ for i in range(n_mhe-1): # 27 was fine, range(11) range(n_mhe): 26,35,36,37,38,3
                 xz_hold = w_opt3[(Nstates+Nalgvars)*ix:(Nstates+Nalgvars)*(ix+1)]
                 x_guess = horzcat(x_guess,xz_hold[0:Nstates])
                 z_guess = horzcat(z_guess,xz_hold[Nstates:Nstates+Nalgvars]) 
+                     
+            my_e, my_f, my_g, my_h, my_i, my_j = f_c(x_guess[:,-1], 
+                                                     z_guess[:,-1], u_opt[:,-1],
+                                                     par_val_mismatch)                                  
+            # Forward Euler Discretization method (No need for exponentials)
+            my_i = my_i + eye(Nstates)
+            my_k = solve(my_h,my_g)
+            my_a = my_i - mtimes(my_j,my_k)        
+            
+            a_c2d.append(my_a)
+            
+            # get the full C matrix
+            my_c1 = my_e - mtimes(my_f,my_k) 
+    
+            # Get the no of measurements at that time instant
+            Nmeas = meas_struct[iw+1]
+            
+            # Build appropriate C matrix
+            if Nmeas == 13:                   
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:],
+                               my_c1[196,:], my_c1[201,:], my_c1[203,:], my_c1[205,:],
+                               my_c1[206,:])
+                c_store.append(my_c)
                 
+                # Apply EKF update formula (no inverse!)
+                if iw == i+1: # If last then only filtering (no prediction)
+                    P = P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P)
+                    p_store.append(P)
+                else: # Else filtering + prediction
+                    Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_full + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                    p_store.append(Pi)
+                    P = Q1 + mtimes(mtimes(a_c2d[iw+1],Pi),a_c2d[iw+1].T)
+                    p_store.append(P)              
+                               
+            if Nmeas == 8:
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall,
+                               my_c_mm_t, my_c1[396,:])
+                c_store.append(my_c)
+                
+                # Apply EKF update formula (no inverse!)
+                if iw == i+1: # If last then only filtering (no prediction)
+                    P = P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P)
+                    p_store.append(P)
+                else: # Else filtering + prediction
+                    Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1_half + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                    p_store.append(Pi)
+                    P = Q1 + mtimes(mtimes(a_c2d[iw+1],Pi),a_c2d[iw+1].T)
+                    p_store.append(P)              
+                               
+            if Nmeas == 6:
+                my_c = vertcat(my_c1[318,:], my_c1[319,:], my_c1[320,:], my_c1[322,:], 
+                               my_c_t_roof, my_c_t_wall)
+                c_store.append(my_c)
+                
+                # Apply EKF update formula (no inverse!)
+                if iw == i+1: # If last then only filtering (no prediction)
+                    P = P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P)
+                    p_store.append(P)
+                else: # Else filtering + prediction
+                    Pi = (P - mtimes(mtimes(mtimes(P,my_c.T),
+                            solve(R1 + mtimes(mtimes(my_c,P),my_c.T), my_c)),P))
+                    p_store.append(Pi)
+                    P = Q1 + mtimes(mtimes(a_c2d[iw+1],Pi),a_c2d[iw+1].T)
+                    p_store.append(P)
+                
+        # Smoothing the matrix back
+        Ps = p_store[-1]
+        for i_s in range(i+1):
+            # first two Ax = B solves
+            # We are following biegler formula with -ve sign
+            p_hold = solve(p_store[-1*(2*(i_s+1))],a_c2d[-1*(i_s+2)])
+            p_hold1 = solve(p_store[-1*(2*(i_s+1))],
+                          p_store[-1*(2*(i_s+1))]-Ps)
+            Ps = p_store[-1*(2*i_s+1+1)] - mtimes(mtimes(mtimes(mtimes(p_store[-1*(2*i_s+1+1)],a_c2d[-1*(i_s+2)]),
+                        p_hold1),p_hold),p_store[-1*(2*i_s+1+1)])
+            
+        S = linalg.inv(Ps)
+        
+        ## Extra terms for smoothing MHE objective function
+        # 1. O matrix
+        Oz = []
+        Oz = horzcat(Oz,c_store[0])
+        a_mult = a_c2d[0]
+        for i_p in range(i+1): 
+            if i_p > 0:
+                a_mult = mtimes(a_c2d[i_p],a_mult)                
+            Oz = horzcat(Oz,mtimes(c_store[i_p+1],a_mult))
+            
+        # 2. M
+        M_main = []
+        # No. of rows: i+2, No. of columns: i+2
+        # Build the columns
+        mc = np.zeros(c_store[0].shape)
+        mc1 = np.zeros(c_store[0].shape)        
+        for i_mc in range(i+1):
+            ac2d_mult = a_c2d[i_mc+1]
+            # Build it row by row
+            # Add appropriate no of zero matrices to column first
+            mc = []
+            for i_mr1 in range(i_mc+1):
+                mc = vertcat(mc, mc1)
+            # Now add the other rwo contents   
+            for i_mr in range(i+1-i_mc):
+                al_mult = c_store[i_mr+1+i_mc]
+                if i_mr > 0:                                        
+                    al_mult = mtimes(al_mult,ac2d_mult)
+                    ac2d_mult = mtimes(a_c2d[i_mr+1+i_mc],ac2d_mult)                    
+                mc = vertcat(mc, al_mult)
+            # Build the M matrix by adding the full column    
+            M_main = horzcat(M_main, mc)    
+
+        # 3. Q: diag(Q_{k-N},...,Q_{k-1})  
+        # No of Q,s
+        Q_0 = np.zeros((Nstates, Nstates))
+        Q_s = []
+        for i_q in range(i+2):
+            Q_s1 = []
+            for i_qj in range(i+2):
+                if i_q == i_qj:
+                    Q_s1 = horzcat(Q_s1, Q1)
+                else:
+                    Q_s1 = horzcat(Q_s1, Q_0)
+            Q_s = vertcat(Q_s,Q_s1)
+                
+        # 4. R: Based on Nmeas fit the matrices in diagonal
+        R_s = []
+        for i_q in range(i+2):
+            R_s1 = []
+            for i_qj in range(i+2):
+                # Build the Matrix row                
+                if i_q == i_qj:
+                    if meas_struct[i_q] == 13:
+                        R_s1 = horzcat(R_s1, R1_full)
+                    if meas_struct[i_q] == 8:
+                        R_s1 = horzcat(R_s1, R1_half)
+                    if meas_struct[i_q] == 6:
+                        R_s1 = horzcat(R_s1, R1)                        
+                else:
+                    R_0 = np.zeros((meas_struct[i_q], meas_struct[i_q]))
+                    R_s1 = horzcat(R_s1, R_0)
+            R_s = vertcat(R_s,R_s1)       
+                    
+        # 5. W
+        W1 = mtimes(mtimes(Oz,Ps),Oz.T) + mtimes(mtimes(M_main,Q_s),M_main.T)+ R_s
+        W = linalg.inv(W1)
+            
     # Check if solved successfully otherwise break
     if solver.stats().get('return_status')=='Solve_Succeeded':
         flag = 0
